@@ -17,7 +17,7 @@ interface IRiskRegistry {
     }
 
     struct ShieldAction {
-        address protocol;g
+        address protocol;
         ThreatLevel threatLevel;
         uint256 amountSaved;
         string reason;
