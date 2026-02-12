@@ -199,30 +199,78 @@ forge test --match-test test_FullFlow_DepositMonitorShield -vvv
 # Start local node
 anvil
 
-# Deploy
+# Deploy (all-in-one with mock bridge)
 forge script script/Deploy.s.sol --rpc-url http://localhost:8545 --broadcast
 ```
 
-### Testnet (Sepolia/Base Sepolia)
+### Testnet - Arbitrum Sepolia + Base Sepolia (with CCIP)
+
+Both chains run identical full systems. CRE (AI) analyzes risk across chains and decides where to bridge funds for safety.
 
 ```bash
-# Set environment
-export PRIVATE_KEY=your_private_key
-export RPC_URL=https://sepolia.infura.io/v3/YOUR_KEY
+# 1. Set environment
+cp .env.example .env
+# Edit .env with your PRIVATE_KEY, ARBISCAN_API_KEY, BASESCAN_API_KEY
 
-# Deploy
-forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
+# 2. Deploy on Arbitrum Sepolia (full system + CCIP bridge)
+forge script script/DeployArbitrum.s.sol --rpc-url arbitrum_sepolia --broadcast
+
+# 3. Deploy on Base Sepolia (full system + CCIP bridge)
+forge script script/DeployBase.s.sol --rpc-url base_sepolia --broadcast
+
+# 4. Configure bidirectional CCIP bridge
+# Arbitrum → Base
+ARB_BRIDGE=<addr> BASE_BRIDGE=<addr> BASE_SAFE_HAVEN=<base_aave_addr> \
+  forge script script/ConfigureBridge.s.sol --tc ConfigureBridgeArb --rpc-url arbitrum_sepolia --broadcast
+
+# Base → Arbitrum
+ARB_BRIDGE=<addr> BASE_BRIDGE=<addr> ARB_SAFE_HAVEN=<arb_aave_addr> \
+  forge script script/ConfigureBridge.s.sol --tc ConfigureBridgeBase --rpc-url base_sepolia --broadcast
 ```
 
-## Contract Addresses (After Deployment)
+## Deployed Contract Addresses
+
+> All contracts are verified on Arbiscan & Basescan.
+
+### Arbitrum Sepolia (Chain ID: 421614)
 
 | Contract | Address |
 |----------|---------|
-| MockUSDC | `TBD` |
-| Faucet | `TBD` |
-| RiskRegistry | `TBD` |
-| ShieldVault | `TBD` |
-| ShieldBridge | `TBD` |
+| MockUSDC | [`0x4d107C58DCda55ea6ea2B162d9C434F710E42038`](https://sepolia.arbiscan.io/address/0x4d107C58DCda55ea6ea2B162d9C434F710E42038) |
+| Faucet | [`0x6E860FF2C4ea6b01815D74E54859Cdd9DD172256`](https://sepolia.arbiscan.io/address/0x6E860FF2C4ea6b01815D74E54859Cdd9DD172256) |
+| RiskRegistry | [`0xa23BE1297F836FF7D4E3297320ff16dbc7903e6D`](https://sepolia.arbiscan.io/address/0xa23BE1297F836FF7D4E3297320ff16dbc7903e6D) |
+| ShieldVault | [`0xcFBd47c63D284A8F824e586596Df4d5c57326c8B`](https://sepolia.arbiscan.io/address/0xcFBd47c63D284A8F824e586596Df4d5c57326c8B) |
+| ShieldBridge (CCIP) | [`0xA5D0CF3DC85538FfC93EF8941819e2b1b0460387`](https://sepolia.arbiscan.io/address/0xA5D0CF3DC85538FfC93EF8941819e2b1b0460387) |
+| AaveAdapter (LOW 25%) | [`0xB81961aA49d7E834404e299e688B3Dc09a5EFe5a`](https://sepolia.arbiscan.io/address/0xB81961aA49d7E834404e299e688B3Dc09a5EFe5a) |
+| CompoundAdapter (LOW 25%) | [`0xcc547a2B0f18b34095623809977D54cfe306BEBF`](https://sepolia.arbiscan.io/address/0xcc547a2B0f18b34095623809977D54cfe306BEBF) |
+| MorphoAdapter (MEDIUM 30%) | [`0x5f8A64Bc67f23b8d5d02c7CFE187AD42D59f1D59`](https://sepolia.arbiscan.io/address/0x5f8A64Bc67f23b8d5d02c7CFE187AD42D59f1D59) |
+| YieldMaxAdapter (HIGH 20%) | [`0x5EbD6F3DA76C2B9C9d6aAC89DA08c388EaB2B3cb`](https://sepolia.arbiscan.io/address/0x5EbD6F3DA76C2B9C9d6aAC89DA08c388EaB2B3cb) |
+
+### Base Sepolia (Chain ID: 84532)
+
+| Contract | Address |
+|----------|---------|
+| MockUSDC | [`0x62428d5107E8846E1a9814941BD123c8B34c5716`](https://sepolia.basescan.org/address/0x62428d5107E8846E1a9814941BD123c8B34c5716) |
+| Faucet | [`0xCc641dEBd179F2Af554dbd8fa9f9B4397967acf7`](https://sepolia.basescan.org/address/0xCc641dEBd179F2Af554dbd8fa9f9B4397967acf7) |
+| RiskRegistry | [`0x986d494B19f8Eb3fa19f201Dcd1ee6f67003D57F`](https://sepolia.basescan.org/address/0x986d494B19f8Eb3fa19f201Dcd1ee6f67003D57F) |
+| ShieldVault | [`0xb4a54D664c7f4c725e81bcBA4aC8ad665e6665B8`](https://sepolia.basescan.org/address/0xb4a54D664c7f4c725e81bcBA4aC8ad665e6665B8) |
+| ShieldBridge (CCIP) | [`0x32583f9C0A0d9Fa6517cf4005826148d81C85056`](https://sepolia.basescan.org/address/0x32583f9C0A0d9Fa6517cf4005826148d81C85056) |
+| AaveAdapter (LOW 25%) | [`0xbdAea5744AC79132c96420Ce13De3d18C38FEeca`](https://sepolia.basescan.org/address/0xbdAea5744AC79132c96420Ce13De3d18C38FEeca) |
+| CompoundAdapter (LOW 25%) | [`0xcAf7B73f3fE685A3d87A1d150C1503334EdA79De`](https://sepolia.basescan.org/address/0xcAf7B73f3fE685A3d87A1d150C1503334EdA79De) |
+| MorphoAdapter (MEDIUM 30%) | [`0xefD2e27C073e72aAEdd1276Ab4B2C1014d704CAe`](https://sepolia.basescan.org/address/0xefD2e27C073e72aAEdd1276Ab4B2C1014d704CAe) |
+| YieldMaxAdapter (HIGH 20%) | [`0x315dc90494e041ea5Ab425E12A76B299aE2A584d`](https://sepolia.basescan.org/address/0x315dc90494e041ea5Ab425E12A76B299aE2A584d) |
+
+### CCIP Configuration (Bidirectional)
+
+| Route | CCIP Router | Chain Selector |
+|-------|-------------|----------------|
+| Arbitrum Sepolia | `0x2a9C5afB0d0e4BAb2BCdaE109EC4b0c4Be15a165` | `3478487238524512106` |
+| Base Sepolia | `0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93` | `10344971235874465080` |
+
+**Bidirectional Emergency Bridge Flow**:
+- Arbitrum risky → (CCIP) → Base Aave Safe Haven
+- Base risky → (CCIP) → Arbitrum Aave Safe Haven
+- CRE (AI) analyzes TVL, risk scores, and protocol health to decide optimal chain
 
 ## Usage Flow
 
