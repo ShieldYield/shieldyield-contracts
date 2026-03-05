@@ -5,8 +5,12 @@ import {IShieldVault} from "./interfaces/IShieldVault.sol";
 import {IProtocolAdapter} from "./interfaces/IProtocolAdapter.sol";
 import {IRiskRegistry} from "./interfaces/IRiskRegistry.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    SafeERC20
+} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title ShieldVault
@@ -72,12 +76,12 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
 
     // ============ Constructor ============
 
-    constructor(
-        address _asset,
-        address _riskRegistry
-    ) Ownable(msg.sender) {
+    constructor(address _asset, address _riskRegistry) Ownable(msg.sender) {
         require(_asset != address(0), "ShieldVault: zero asset address");
-        require(_riskRegistry != address(0), "ShieldVault: zero registry address");
+        require(
+            _riskRegistry != address(0),
+            "ShieldVault: zero registry address"
+        );
 
         asset = IERC20(_asset);
         riskRegistry = IRiskRegistry(_riskRegistry);
@@ -117,18 +121,23 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     ) external onlyOwner {
         require(adapter != address(0), "ShieldVault: zero address");
         require(!_isPool[adapter], "ShieldVault: pool exists");
-        require(targetWeight <= BASIS_POINTS, "ShieldVault: weight exceeds 100%");
+        require(
+            targetWeight <= BASIS_POINTS,
+            "ShieldVault: weight exceeds 100%"
+        );
 
         _poolIndex[adapter] = _pools.length;
         _isPool[adapter] = true;
 
-        _pools.push(PoolAllocation({
-            adapter: adapter,
-            tier: tier,
-            targetWeight: targetWeight,
-            currentAmount: 0,
-            isActive: true
-        }));
+        _pools.push(
+            PoolAllocation({
+                adapter: adapter,
+                tier: tier,
+                targetWeight: targetWeight,
+                currentAmount: 0,
+                isActive: true
+            })
+        );
 
         // Approve adapter to pull funds
         asset.approve(adapter, type(uint256).max);
@@ -159,7 +168,10 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     /// @notice Update target weight for a pool
     /// @param adapter Address of the adapter
     /// @param newWeight New target weight in basis points
-    function updatePoolWeight(address adapter, uint256 newWeight) external onlyOwner {
+    function updatePoolWeight(
+        address adapter,
+        uint256 newWeight
+    ) external onlyOwner {
         require(_isPool[adapter], "ShieldVault: pool not found");
         require(newWeight <= BASIS_POINTS, "ShieldVault: weight exceeds 100%");
 
@@ -171,7 +183,9 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     /// @notice Deposit assets into the vault
     /// @param amount Amount of assets to deposit
     /// @return shares Amount of shares minted
-    function deposit(uint256 amount) external nonReentrant whenNotPaused returns (uint256 shares) {
+    function deposit(
+        uint256 amount
+    ) external nonReentrant whenNotPaused returns (uint256 shares) {
         require(amount >= MIN_DEPOSIT, "ShieldVault: below minimum");
 
         // Calculate shares
@@ -205,11 +219,16 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     /// @notice Withdraw assets from the vault
     /// @param shares Amount of shares to redeem
     /// @return amount Amount of assets withdrawn
-    function withdraw(uint256 shares) external nonReentrant whenNotPaused returns (uint256 amount) {
+    function withdraw(
+        uint256 shares
+    ) external nonReentrant whenNotPaused returns (uint256 amount) {
         require(shares > 0, "ShieldVault: zero shares");
 
         UserPosition storage position = _positions[msg.sender];
-        require(position.totalShares >= shares, "ShieldVault: insufficient shares");
+        require(
+            position.totalShares >= shares,
+            "ShieldVault: insufficient shares"
+        );
 
         // Calculate amount
         uint256 totalAssets = getTotalAssets();
@@ -233,14 +252,18 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     /// @notice Get user position
     /// @param user Address of the user
     /// @return User position struct
-    function getUserPosition(address user) external view returns (UserPosition memory) {
+    function getUserPosition(
+        address user
+    ) external view returns (UserPosition memory) {
         return _positions[user];
     }
 
     /// @notice Get user balance in asset terms
     /// @param user Address of the user
     /// @return balance User's balance in underlying asset
-    function getUserBalance(address user) external view returns (uint256 balance) {
+    function getUserBalance(
+        address user
+    ) external view returns (uint256 balance) {
         UserPosition storage position = _positions[user];
         if (position.totalShares == 0 || totalShares == 0) {
             return 0;
@@ -261,15 +284,20 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
 
         for (uint256 i = 0; i < _pools.length; i++) {
             if (_pools[i].isActive && totalWeight > 0) {
-                targetAmounts[i] = (totalAssets * _pools[i].targetWeight) / totalWeight;
+                targetAmounts[i] =
+                    (totalAssets * _pools[i].targetWeight) /
+                    totalWeight;
             }
         }
 
         // Withdraw from over-allocated pools
         for (uint256 i = 0; i < _pools.length; i++) {
-            if (_pools[i].isActive && _pools[i].currentAmount > targetAmounts[i]) {
+            if (
+                _pools[i].isActive && _pools[i].currentAmount > targetAmounts[i]
+            ) {
                 uint256 excess = _pools[i].currentAmount - targetAmounts[i];
-                uint256 withdrawn = IProtocolAdapter(_pools[i].adapter).withdraw(excess);
+                uint256 withdrawn = IProtocolAdapter(_pools[i].adapter)
+                    .withdraw(excess);
                 _pools[i].currentAmount -= withdrawn;
             }
         }
@@ -277,7 +305,9 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         // Deposit to under-allocated pools
         uint256 available = asset.balanceOf(address(this));
         for (uint256 i = 0; i < _pools.length; i++) {
-            if (_pools[i].isActive && _pools[i].currentAmount < targetAmounts[i]) {
+            if (
+                _pools[i].isActive && _pools[i].currentAmount < targetAmounts[i]
+            ) {
                 uint256 needed = targetAmounts[i] - _pools[i].currentAmount;
                 uint256 toDeposit = needed > available ? available : needed;
                 if (toDeposit > 0) {
@@ -312,7 +342,9 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         pool.currentAmount = 0;
 
         // Get threat level from registry
-        IRiskRegistry.ThreatLevel threatLevel = riskRegistry.getThreatLevel(adapter);
+        IRiskRegistry.ThreatLevel threatLevel = riskRegistry.getThreatLevel(
+            adapter
+        );
 
         // Log the shield action for affected users
         // Note: In production, would need to track per-user allocation
@@ -325,7 +357,10 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         );
 
         // If CRITICAL and safe haven exists, move funds there
-        if (threatLevel == IRiskRegistry.ThreatLevel.CRITICAL && safeHaven != address(0)) {
+        if (
+            threatLevel == IRiskRegistry.ThreatLevel.CRITICAL &&
+            safeHaven != address(0)
+        ) {
             uint256 balance = asset.balanceOf(address(this));
             if (balance > 0) {
                 IProtocolAdapter(safeHaven).deposit(balance);
@@ -347,19 +382,27 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         string calldata reason
     ) external onlyCRE nonReentrant {
         require(_isPool[adapter], "ShieldVault: pool not found");
-        require(percentage <= BASIS_POINTS, "ShieldVault: percentage exceeds 100%");
+        require(
+            percentage <= BASIS_POINTS,
+            "ShieldVault: percentage exceeds 100%"
+        );
 
         uint256 index = _poolIndex[adapter];
         PoolAllocation storage pool = _pools[index];
 
         require(pool.currentAmount > 0, "ShieldVault: no funds in pool");
 
-        uint256 amountToWithdraw = (pool.currentAmount * percentage) / BASIS_POINTS;
-        uint256 withdrawn = IProtocolAdapter(adapter).withdraw(amountToWithdraw);
+        uint256 amountToWithdraw = (pool.currentAmount * percentage) /
+            BASIS_POINTS;
+        uint256 withdrawn = IProtocolAdapter(adapter).withdraw(
+            amountToWithdraw
+        );
         pool.currentAmount -= withdrawn;
 
         // Get threat level from registry
-        IRiskRegistry.ThreatLevel threatLevel = riskRegistry.getThreatLevel(adapter);
+        IRiskRegistry.ThreatLevel threatLevel = riskRegistry.getThreatLevel(
+            adapter
+        );
 
         // Log the shield action
         riskRegistry.logShieldAction(
@@ -391,14 +434,20 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
 
     /// @notice Get all pool allocations
     /// @return Array of pool allocations
-    function getPoolAllocations() external view returns (PoolAllocation[] memory) {
+    function getPoolAllocations()
+        external
+        view
+        returns (PoolAllocation[] memory)
+    {
         return _pools;
     }
 
     /// @notice Preview shares for a deposit amount
     /// @param amount Amount to deposit
     /// @return shares Expected shares
-    function previewDeposit(uint256 amount) external view returns (uint256 shares) {
+    function previewDeposit(
+        uint256 amount
+    ) external view returns (uint256 shares) {
         uint256 totalAssets = getTotalAssets();
         if (totalShares == 0 || totalAssets == 0) {
             shares = amount;
@@ -410,7 +459,9 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     /// @notice Preview amount for a share withdrawal
     /// @param shares Shares to redeem
     /// @return amount Expected amount
-    function previewWithdraw(uint256 shares) external view returns (uint256 amount) {
+    function previewWithdraw(
+        uint256 shares
+    ) external view returns (uint256 amount) {
         if (totalShares == 0) {
             return 0;
         }
@@ -439,7 +490,8 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
 
         for (uint256 i = 0; i < _pools.length; i++) {
             if (_pools[i].isActive && _pools[i].targetWeight > 0) {
-                uint256 poolAmount = (amount * _pools[i].targetWeight) / totalWeight;
+                uint256 poolAmount = (amount * _pools[i].targetWeight) /
+                    totalWeight;
 
                 // Last pool gets remaining to handle rounding
                 if (i == _pools.length - 1 || poolAmount > remaining) {
@@ -458,41 +510,59 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     /// @notice Withdraw assets from pools proportionally
     /// @param amount Amount to withdraw
     /// @return totalWithdrawn Total amount withdrawn
-    function _withdrawFromPoolsProportionally(uint256 amount) internal returns (uint256 totalWithdrawn) {
+    function _withdrawFromPoolsProportionally(
+        uint256 amount
+    ) internal returns (uint256 totalWithdrawn) {
+        // Use REAL adapter balances (not internal currentAmount which can
+        // become desync'd after emergency withdrawals or direct transfers).
         uint256 totalInPools = 0;
+        uint256[] memory realBalances = new uint256[](_pools.length);
         for (uint256 i = 0; i < _pools.length; i++) {
             if (_pools[i].isActive) {
-                totalInPools += _pools[i].currentAmount;
+                uint256 bal = IProtocolAdapter(_pools[i].adapter).getBalance();
+                realBalances[i] = bal;
+                totalInPools += bal;
             }
-        }
-
-        if (totalInPools == 0) {
-            // Use vault balance directly
-            return amount > asset.balanceOf(address(this)) ? asset.balanceOf(address(this)) : amount;
         }
 
         uint256 remaining = amount;
 
-        for (uint256 i = 0; i < _pools.length && remaining > 0; i++) {
-            if (_pools[i].isActive && _pools[i].currentAmount > 0) {
-                uint256 poolShare = (amount * _pools[i].currentAmount) / totalInPools;
-                poolShare = poolShare > remaining ? remaining : poolShare;
-                poolShare = poolShare > _pools[i].currentAmount ? _pools[i].currentAmount : poolShare;
+        if (totalInPools > 0) {
+            for (uint256 i = 0; i < _pools.length && remaining > 0; i++) {
+                if (_pools[i].isActive && realBalances[i] > 0) {
+                    // Proportional share from this pool
+                    uint256 poolShare = (amount * realBalances[i]) /
+                        totalInPools;
+                    poolShare = poolShare > remaining ? remaining : poolShare;
+                    poolShare = poolShare > realBalances[i]
+                        ? realBalances[i]
+                        : poolShare;
 
-                if (poolShare > 0) {
-                    uint256 withdrawn = IProtocolAdapter(_pools[i].adapter).withdraw(poolShare);
-                    _pools[i].currentAmount -= withdrawn;
-                    totalWithdrawn += withdrawn;
-                    remaining -= withdrawn;
+                    if (poolShare > 0) {
+                        uint256 withdrawn = IProtocolAdapter(_pools[i].adapter)
+                            .withdraw(poolShare);
+                        // Sync internal accounting to real balance
+                        _pools[i].currentAmount = realBalances[i] > withdrawn
+                            ? realBalances[i] - withdrawn
+                            : 0;
+                        totalWithdrawn += withdrawn;
+                        remaining -= withdrawn;
+                    }
                 }
             }
         }
 
-        // Add any vault balance
-        uint256 vaultBalance = asset.balanceOf(address(this));
-        if (remaining > 0 && vaultBalance > 0) {
-            uint256 fromVault = remaining > vaultBalance ? vaultBalance : remaining;
-            totalWithdrawn += fromVault;
+        // Fallback: use any USDC sitting directly in the vault
+        if (remaining > 0) {
+            uint256 vaultBalance = asset.balanceOf(address(this));
+            if (vaultBalance > 0) {
+                uint256 fromVault = remaining > vaultBalance
+                    ? vaultBalance
+                    : remaining;
+                // Note: safeTransfer is called by the caller (withdraw()) using totalWithdrawn.
+                // We just account for it here — the vault already holds these funds.
+                totalWithdrawn += fromVault;
+            }
         }
     }
 
