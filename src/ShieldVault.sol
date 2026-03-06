@@ -513,6 +513,11 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     function _withdrawFromPoolsProportionally(
         uint256 amount
     ) internal returns (uint256 totalWithdrawn) {
+        // Capture any USDC sitting directly in the vault BEFORE pulling from
+        // adapters. This is the only balance eligible for the fallback below.
+        // Reading it after the adapter loop would double-count adapter proceeds.
+        uint256 vaultDirectBalance = asset.balanceOf(address(this));
+
         // Use REAL adapter balances (not internal currentAmount which can
         // become desync'd after emergency withdrawals or direct transfers).
         uint256 totalInPools = 0;
@@ -552,17 +557,15 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
             }
         }
 
-        // Fallback: use any USDC sitting directly in the vault
-        if (remaining > 0) {
-            uint256 vaultBalance = asset.balanceOf(address(this));
-            if (vaultBalance > 0) {
-                uint256 fromVault = remaining > vaultBalance
-                    ? vaultBalance
-                    : remaining;
-                // Note: safeTransfer is called by the caller (withdraw()) using totalWithdrawn.
-                // We just account for it here — the vault already holds these funds.
-                totalWithdrawn += fromVault;
-            }
+        // Fallback: use USDC that was already sitting in the vault before
+        // this call (e.g. residual from a previous partial withdrawal).
+        // Do NOT use asset.balanceOf() here — it now includes adapter proceeds
+        // which are already counted in totalWithdrawn above.
+        if (remaining > 0 && vaultDirectBalance > 0) {
+            uint256 fromVault = remaining > vaultDirectBalance
+                ? vaultDirectBalance
+                : remaining;
+            totalWithdrawn += fromVault;
         }
     }
 

@@ -101,13 +101,19 @@ contract MockProtocolAdapter is BaseAdapter {
         uint256 totalBalance = _principal + _accruedYield;
         uint256 toWithdraw = amount > totalBalance ? totalBalance : amount;
 
+        // Cap to actual USDC balance: yield is virtual (time-calculated) and not
+        // backed by real tokens in the adapter. BaseAdapter.withdraw transfers the
+        // returned amount so exceeding the real balance causes a silent revert.
+        uint256 actualBalance = IERC20(asset).balanceOf(address(this));
+        if (toWithdraw > actualBalance) toWithdraw = actualBalance;
+
         // Withdraw from yield first, then principal
         if (toWithdraw <= _accruedYield) {
             _accruedYield -= toWithdraw;
         } else {
             uint256 fromPrincipal = toWithdraw - _accruedYield;
             _accruedYield = 0;
-            _principal -= fromPrincipal;
+            _principal = _principal > fromPrincipal ? _principal - fromPrincipal : 0;
         }
 
         emit MockWithdraw(toWithdraw);

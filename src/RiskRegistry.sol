@@ -153,7 +153,7 @@ contract RiskRegistry is IRiskRegistry, Ownable {
         address[] calldata protocols,
         uint8[] calldata scores,
         string[] calldata reasons
-    ) external onlyAuthorized {
+    ) external {
         require(
             protocols.length == scores.length && scores.length == reasons.length,
             "RiskRegistry: array length mismatch"
