@@ -25,7 +25,7 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     uint256 public constant BASIS_POINTS = 10000;
 
     /// @notice Minimum deposit amount (to prevent dust)
-    uint256 public constant MIN_DEPOSIT = 1e6; // 1 USDC (6 decimals)
+    uint256 public constant MIN_DEPOSIT = 1e18; // 1 BnM (18 decimals)
 
     /// @notice Partial withdrawal percentages for WARNING level
     uint256 public constant WARNING_WITHDRAW_PERCENT = 5000; // 50%
@@ -43,6 +43,9 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
 
     /// @notice Safe haven adapter (where funds go during emergency)
     address public safeHaven;
+
+    /// @notice ShieldBridge address for CCIP cross-chain transfers
+    address public shieldBridge;
 
     /// @notice CRE (Chainlink Runtime Environment) address - only this can trigger actions
     address public creAddress;
@@ -102,6 +105,13 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         require(_safeHaven != address(0), "ShieldVault: zero address");
         require(_isPool[_safeHaven], "ShieldVault: not a registered pool");
         safeHaven = _safeHaven;
+    }
+
+    /// @notice Set the ShieldBridge address for cross-chain evacuation
+    /// @param _bridge Address of the ShieldBridge contract
+    function setBridgeAddress(address _bridge) external onlyOwner {
+        require(_bridge != address(0), "ShieldVault: zero address");
+        shieldBridge = _bridge;
     }
 
     /// @notice Pause/unpause the vault
@@ -214,6 +224,44 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         _distributeToPoolsProportionally(amount);
 
         emit Deposited(msg.sender, amount, shares);
+    }
+
+    /// @notice Deposit assets on behalf of another address (used by CCIP bridge receiver)
+    /// @param originalSender Original sender address (cross-chain) - receives shares
+    /// @param amount Amount of assets to deposit
+    /// @return shares Amount of shares minted
+    function depositFor(
+        address originalSender,
+        uint256 amount
+    ) external nonReentrant whenNotPaused returns (uint256 shares) {
+        require(amount >= MIN_DEPOSIT, "ShieldVault: below minimum");
+        require(originalSender != address(0), "ShieldVault: zero address");
+
+        // Calculate shares
+        uint256 totalAssets = getTotalAssets();
+        if (totalShares == 0 || totalAssets == 0) {
+            shares = amount;
+        } else {
+            shares = (amount * totalShares) / totalAssets;
+        }
+
+        require(shares > 0, "ShieldVault: zero shares");
+
+        // Transfer assets from caller (ShieldBridge)
+        asset.safeTransferFrom(msg.sender, address(this), amount);
+
+        // Update original sender's position
+        UserPosition storage position = _positions[originalSender];
+        position.totalDeposited += amount;
+        position.totalShares += shares;
+        position.lastDepositTime = block.timestamp;
+
+        totalShares += shares;
+
+        // Distribute to pools (Aave + Compound on Base)
+        _distributeToPoolsProportionally(amount);
+
+        emit Deposited(originalSender, amount, shares);
     }
 
     /// @notice Withdraw assets from the vault
@@ -414,6 +462,47 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         );
 
         emit EmergencyWithdrawExecuted(adapter, withdrawn, threatLevel, reason);
+    }
+
+    /// @notice Bridge user funds from safe haven to another chain via CCIP (CRE only)
+    /// @dev Withdraws from safe haven adapter, approves ShieldBridge, and triggers CCIP
+    /// @param amount Amount of tokens to bridge
+    /// @param destinationChainSelector CCIP chain selector for destination
+    function bridgeToSafeChain(
+        uint256 amount,
+        uint64 destinationChainSelector
+    ) external onlyCRE nonReentrant {
+        require(shieldBridge != address(0), "ShieldVault: bridge not set");
+        require(safeHaven != address(0), "ShieldVault: safe haven not set");
+        require(amount > 0, "ShieldVault: zero amount");
+
+        // 1. Withdraw from safe haven adapter
+        uint256 withdrawn = IProtocolAdapter(safeHaven).withdraw(amount);
+        require(withdrawn > 0, "ShieldVault: nothing withdrawn");
+
+        // Update pool accounting
+        uint256 idx = _poolIndex[safeHaven];
+        if (_pools[idx].currentAmount >= withdrawn) {
+            _pools[idx].currentAmount -= withdrawn;
+        } else {
+            _pools[idx].currentAmount = 0;
+        }
+
+        // 2. Approve ShieldBridge to pull tokens
+        asset.approve(shieldBridge, withdrawn);
+
+        // 3. Call ShieldBridge.emergencyBridge — bridge pays CCIP fee from its own ETH
+        (bool success, ) = shieldBridge.call(
+            abi.encodeWithSignature(
+                "emergencyBridge(address,uint256,uint64)",
+                address(asset),
+                withdrawn,
+                destinationChainSelector
+            )
+        );
+        require(success, "ShieldVault: bridge call failed");
+
+        emit BridgeInitiated(address(asset), withdrawn, destinationChainSelector);
     }
 
     // ============ View Functions ============

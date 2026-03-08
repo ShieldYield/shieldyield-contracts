@@ -121,7 +121,9 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
     // ============ Emergency Bridge Functions ============
 
     /// @notice Emergency bridge tokens to safe chain
-    /// @dev Only callable by ShieldVault, CRE, or owner during emergencies
+    /// @dev Only callable by ShieldVault, CRE, or owner during emergencies.
+    ///      CCIP fee is paid from the contract's own ETH balance (pre-funded).
+    ///      This allows CRE writeReport() to call this without sending msg.value.
     /// @param token Token address to bridge
     /// @param amount Amount to bridge
     /// @param destinationChainSelector Destination chain CCIP selector
@@ -130,12 +132,12 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
         address token,
         uint256 amount,
         uint64 destinationChainSelector
-    ) external payable onlyShieldVaultOrCRE nonReentrant returns (bytes32 messageId) {
+    ) external onlyShieldVaultOrCRE nonReentrant returns (bytes32 messageId) {
         // Validate destination chain
         address receiver = chainToReceiver[destinationChainSelector];
         if (receiver == address(0)) revert UnsupportedChain(destinationChainSelector);
 
-        // Transfer tokens from caller
+        // Pull tokens from caller (ShieldVault must approve this contract first)
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
         // Approve router to spend tokens
@@ -160,15 +162,15 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
             receiver: abi.encode(receiver),
             data: payload,
             tokenAmounts: tokenAmounts,
-            feeToken: address(0), // Pay in native token
+            feeToken: address(0), // Pay in native ETH (from contract balance)
             extraArgs: _buildCCIPExtraArgs()
         });
 
-        // Get fee
+        // Get fee and pay from contract's own ETH balance
         uint256 fee = router.getFee(destinationChainSelector, message);
-        if (msg.value < fee) revert InsufficientFee(fee, msg.value);
+        if (address(this).balance < fee) revert InsufficientFee(fee, address(this).balance);
 
-        // Send CCIP message
+        // Send CCIP message — fee paid by contract itself
         messageId = router.ccipSend{value: fee}(destinationChainSelector, message);
 
         emergencyBridgeCount++;
@@ -180,12 +182,6 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
             amount,
             msg.sender
         );
-
-        // Refund excess ETH
-        if (msg.value > fee) {
-            (bool success, ) = msg.sender.call{value: msg.value - fee}("");
-            require(success, "Refund failed");
-        }
 
         return messageId;
     }

@@ -12,3 +12,4 @@ docs/
 broadcast/
 # Dotenv file
 .env
+.claude

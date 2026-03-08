@@ -63,6 +63,12 @@ interface IShieldVault {
 
     event PoolRemoved(address indexed adapter);
 
+    event BridgeInitiated(
+        address indexed token,
+        uint256 amount,
+        uint64 destinationChainSelector
+    );
+
     // User functions
     function deposit(uint256 amount) external returns (uint256 shares);
     function withdraw(uint256 shares) external returns (uint256 amount);
@@ -73,6 +79,8 @@ interface IShieldVault {
     function rebalance() external;
     function emergencyWithdraw(address adapter, string calldata reason) external;
     function partialWithdraw(address adapter, uint256 percentage, string calldata reason) external;
+    function bridgeToSafeChain(uint256 amount, uint64 destinationChainSelector) external;
+    function setBridgeAddress(address _bridge) external;
 
     // View functions
     function getTotalAssets() external view returns (uint256);
