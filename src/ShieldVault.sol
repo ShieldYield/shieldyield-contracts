@@ -240,10 +240,10 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     }
 
     /// @notice Deposit assets on behalf of another address (used by CCIP bridge receiver)
-    /// @dev If deposited on behalf of this contract itself or bridge, funds go to the CrossChainPool
-    /// @param originalSender Original sender address (cross-chain) - receives shares
+    /// @dev If deposited via ShieldBridge, we use the Stateful Payload (originalSender) to assign claims
+    /// @param originalSender Original sender address (cross-chain) - receives claims or shares
     /// @param amount Amount of assets to deposit
-    /// @return shares Amount of shares minted (0 if sent to cross-chain pool)
+    /// @return shares Amount of shares minted (0 if sent to cross-chain pool/claims)
     function depositFor(
         address originalSender,
         uint256 amount
@@ -251,26 +251,24 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         require(amount >= MIN_DEPOSIT, "ShieldVault: below minimum");
         require(originalSender != address(0), "ShieldVault: zero address");
 
-        // Transfer assets from caller (ShieldBridge)
+        // Transfer assets from caller (ShieldBridge or external)
         asset.safeTransferFrom(msg.sender, address(this), amount);
 
-        // If this was an emergency bridge from the source chain's ShieldVault wrapper,
-        // the original sender is the source ShieldVault address.
-        // We handle this as pooled funds waiting for Oracle claim assignment.
-        // Or if the originalSender is the source ShieldVault explicitly
+        // CASE 1: Incoming from CCIP Bridge (Stateful Payload)
         if (msg.sender == shieldBridge) {
+            // Automatically assign claim to the specific user transmitted in the payload
+            crossChainClaims[originalSender] += amount;
             totalCrossChainPool += amount;
 
-            // Still distribute the raw assets to the Aave/Compound Base adapters so they earn yield
+            // Distribute to pools (Aave/Compound on Base) so the assets earn yield immediately
             _distributeToPoolsProportionally(amount);
 
-            emit Deposited(address(this), amount, 0); // Log as pooled deposit
+            // Log as a deposit for the user (even if shares aren't minted yet)
+            emit Deposited(originalSender, amount, 0); 
             return 0;
         }
 
-        // --- Standard individual proxy deposit fallback ---
-
-        // Calculate shares
+        // CASE 2: Standard individual proxy deposit (Fallback)
         uint256 totalAssets = getTotalAssets();
         if (totalShares == 0 || totalAssets == 0) {
             shares = amount;
@@ -280,9 +278,6 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
 
         require(shares > 0, "ShieldVault: zero shares");
 
-        // Transfer assets from caller (ShieldBridge)
-        asset.safeTransferFrom(msg.sender, address(this), amount);
-
         // Update original sender's position
         UserPosition storage position = _positions[originalSender];
         position.totalDeposited += amount;
@@ -291,7 +286,7 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
 
         totalShares += shares;
 
-        // Distribute to pools (Aave + Compound on Base)
+        // Distribute to pools
         _distributeToPoolsProportionally(amount);
 
         emit Deposited(originalSender, amount, shares);
@@ -568,7 +563,56 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         emit EmergencyWithdrawExecuted(adapter, withdrawn, threatLevel, reason);
     }
 
-    /// @notice Bridge user funds from safe haven to another chain via CCIP (CRE only)
+    /// @notice Bridge INDIVIDUAL user funds from safe haven to another chain via CCIP (CRE only)
+    /// @dev This uses Stateful CCIP Payload to transmit ownership data directly
+    /// @param user Address of the user whose funds are being bridged
+    /// @param amount Amount of tokens to bridge
+    /// @param destinationChainSelector CCIP chain selector for destination
+    function bridgeUserFunds(
+        address user,
+        uint256 amount,
+        uint64 destinationChainSelector
+    ) external onlyCRE nonReentrant {
+        require(shieldBridge != address(0), "ShieldVault: bridge not set");
+        require(safeHaven != address(0), "ShieldVault: safe haven not set");
+        require(amount > 0, "ShieldVault: zero amount");
+        require(user != address(0), "ShieldVault: zero user address");
+
+        // 1. Withdraw from safe haven adapter
+        uint256 withdrawn = IProtocolAdapter(safeHaven).withdraw(amount);
+        require(withdrawn > 0, "ShieldVault: nothing withdrawn");
+
+        // Update pool accounting
+        uint256 idx = _poolIndex[safeHaven];
+        if (_pools[idx].currentAmount >= withdrawn) {
+            _pools[idx].currentAmount -= withdrawn;
+        } else {
+            _pools[idx].currentAmount = 0;
+        }
+
+        // 2. Approve ShieldBridge to pull tokens
+        asset.approve(shieldBridge, withdrawn);
+
+        // 3. Call ShieldBridge.emergencyBridge with INDIVIDUAL payload
+        (bool success, ) = shieldBridge.call(
+            abi.encodeWithSignature(
+                "emergencyBridge(address,uint256,uint64,address)",
+                address(asset),
+                withdrawn,
+                destinationChainSelector,
+                user // Pass the actual owner
+            )
+        );
+        require(success, "ShieldVault: individual bridge call failed");
+
+        emit BridgeInitiated(
+            address(asset),
+            withdrawn,
+            destinationChainSelector
+        );
+    }
+
+    /// @notice Bridge GLOBAL user funds from safe haven to another chain via CCIP (CRE only)
     /// @dev Withdraws from safe haven adapter, approves ShieldBridge, and triggers CCIP
     /// @param amount Amount of tokens to bridge
     /// @param destinationChainSelector CCIP chain selector for destination

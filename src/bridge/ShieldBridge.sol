@@ -120,18 +120,17 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
 
     // ============ Emergency Bridge Functions ============
 
-    /// @notice Emergency bridge tokens to safe chain
-    /// @dev Only callable by ShieldVault, CRE, or owner during emergencies.
-    ///      CCIP fee is paid from the contract's own ETH balance (pre-funded).
-    ///      This allows CRE writeReport() to call this without sending msg.value.
+    /// @notice Emergency bridge tokens to safe chain (individual user or pooled)
     /// @param token Token address to bridge
     /// @param amount Amount to bridge
     /// @param destinationChainSelector Destination chain CCIP selector
+    /// @param originalSender The user address to be encoded in the stateful payload
     /// @return messageId CCIP message ID for tracking
     function emergencyBridge(
         address token,
         uint256 amount,
-        uint64 destinationChainSelector
+        uint64 destinationChainSelector,
+        address originalSender
     ) external onlyShieldVaultOrCRE nonReentrant returns (bytes32 messageId) {
         // Validate destination chain
         address receiver = chainToReceiver[destinationChainSelector];
@@ -150,12 +149,12 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
             amount: amount
         });
 
-        // Encode payload: action type + safe haven address
+        // Encode payload: action type + safe haven address + original sender (Stateful Payload)
         address safeHaven = chainToSafeHaven[destinationChainSelector];
         bytes memory payload = abi.encode(
             "EMERGENCY_DEPOSIT", // action
-            safeHaven,           // safe haven adapter on destination
-            msg.sender           // original sender for tracking
+            safeHaven,           // safe haven adapter/vault on destination
+            originalSender       // the actual owner for stateful tracking
         );
 
         IRouterClient.EVM2AnyMessage memory message = IRouterClient.EVM2AnyMessage({
@@ -170,7 +169,7 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
         uint256 fee = router.getFee(destinationChainSelector, message);
         if (address(this).balance < fee) revert InsufficientFee(fee, address(this).balance);
 
-        // Send CCIP message — fee paid by contract itself
+        // Send CCIP message
         messageId = router.ccipSend{value: fee}(destinationChainSelector, message);
 
         emergencyBridgeCount++;
@@ -180,22 +179,29 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
             destinationChainSelector,
             token,
             amount,
-            msg.sender
+            originalSender
         );
 
         return messageId;
     }
 
-    /// @notice Get fee estimate for emergency bridge
-    /// @param token Token address to bridge
-    /// @param amount Amount to bridge
-    /// @param destinationChainSelector Destination chain CCIP selector
-    /// @return fee Fee in native token (ETH)
-    function getEmergencyBridgeFee(
+    /// @notice Legacy/Compatibility version of emergency bridge
+    function emergencyBridge(
         address token,
         uint256 amount,
         uint64 destinationChainSelector
-    ) external view returns (uint256 fee) {
+    ) external onlyShieldVaultOrCRE nonReentrant returns (bytes32 messageId) {
+        // Calls the stateful version using msg.sender as the owner
+        return this.emergencyBridge(token, amount, destinationChainSelector, msg.sender);
+    }
+
+    /// @notice Get fee estimate for emergency bridge with specific sender
+    function getEmergencyBridgeFee(
+        address token,
+        uint256 amount,
+        uint64 destinationChainSelector,
+        address originalSender
+    ) public view returns (uint256 fee) {
         address receiver = chainToReceiver[destinationChainSelector];
         if (receiver == address(0)) revert UnsupportedChain(destinationChainSelector);
 
@@ -206,7 +212,7 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
         });
 
         address safeHaven = chainToSafeHaven[destinationChainSelector];
-        bytes memory payload = abi.encode("EMERGENCY_DEPOSIT", safeHaven, msg.sender);
+        bytes memory payload = abi.encode("EMERGENCY_DEPOSIT", safeHaven, originalSender);
 
         IRouterClient.EVM2AnyMessage memory message = IRouterClient.EVM2AnyMessage({
             receiver: abi.encode(receiver),
@@ -217,6 +223,15 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
         });
 
         return router.getFee(destinationChainSelector, message);
+    }
+
+    /// @notice Get fee estimate for emergency bridge (default version)
+    function getEmergencyBridgeFee(
+        address token,
+        uint256 amount,
+        uint64 destinationChainSelector
+    ) external view returns (uint256 fee) {
+        return getEmergencyBridgeFee(token, amount, destinationChainSelector, msg.sender);
     }
 
     // ============ CCIP Receiver ============
