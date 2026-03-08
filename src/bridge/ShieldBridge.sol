@@ -63,10 +63,10 @@ contract ShieldBridge is IAny2EVMMessageReceiver, Ownable, ReentrancyGuard {
 
     event EmergencyBridgeInitiated(
         bytes32 indexed messageId,
-        uint64 indexed destinationChain,
+        uint64 destinationChain,
         address indexed token,
         uint256 amount,
-        address sender
+        address indexed sender
     );
 
     event EmergencyBridgeReceived(

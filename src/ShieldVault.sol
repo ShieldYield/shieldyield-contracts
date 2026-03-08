@@ -65,6 +65,19 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     /// @notice Adapter address => is registered
     mapping(address => bool) private _isPool;
 
+    // ============ Cross-Chain Claims ============
+
+    /// @notice Total amount of bridged funds waiting to be claimed
+    uint256 public totalCrossChainPool;
+
+    /// @notice User address => claimable amount of bridged funds
+    mapping(address => uint256) public crossChainClaims;
+
+    // ============ Events ============
+
+    event CrossChainClaimsSet(uint256 totalAmount, uint256 userCount);
+    event CrossChainFundsClaimed(address indexed user, uint256 amount);
+
     // ============ Modifiers ============
 
     modifier onlyCRE() {
@@ -227,15 +240,35 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     }
 
     /// @notice Deposit assets on behalf of another address (used by CCIP bridge receiver)
+    /// @dev If deposited on behalf of this contract itself or bridge, funds go to the CrossChainPool
     /// @param originalSender Original sender address (cross-chain) - receives shares
     /// @param amount Amount of assets to deposit
-    /// @return shares Amount of shares minted
+    /// @return shares Amount of shares minted (0 if sent to cross-chain pool)
     function depositFor(
         address originalSender,
         uint256 amount
     ) external nonReentrant whenNotPaused returns (uint256 shares) {
         require(amount >= MIN_DEPOSIT, "ShieldVault: below minimum");
         require(originalSender != address(0), "ShieldVault: zero address");
+
+        // Transfer assets from caller (ShieldBridge)
+        asset.safeTransferFrom(msg.sender, address(this), amount);
+
+        // If this was an emergency bridge from the source chain's ShieldVault wrapper,
+        // the original sender is the source ShieldVault address.
+        // We handle this as pooled funds waiting for Oracle claim assignment.
+        // Or if the originalSender is the source ShieldVault explicitly
+        if (msg.sender == shieldBridge) {
+            totalCrossChainPool += amount;
+
+            // Still distribute the raw assets to the Aave/Compound Base adapters so they earn yield
+            _distributeToPoolsProportionally(amount);
+
+            emit Deposited(address(this), amount, 0); // Log as pooled deposit
+            return 0;
+        }
+
+        // --- Standard individual proxy deposit fallback ---
 
         // Calculate shares
         uint256 totalAssets = getTotalAssets();
@@ -262,6 +295,51 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         _distributeToPoolsProportionally(amount);
 
         emit Deposited(originalSender, amount, shares);
+    }
+
+    /// @notice Allows a user to claim their individual portion of globally bridged funds
+    function claimCrossChainFunds() external nonReentrant whenNotPaused {
+        uint256 claimAmount = crossChainClaims[msg.sender];
+        require(claimAmount > 0, "ShieldVault: nothing to claim");
+        require(
+            totalCrossChainPool >= claimAmount,
+            "ShieldVault: insufficient pool"
+        );
+
+        // Deduct from claims
+        crossChainClaims[msg.sender] = 0;
+        totalCrossChainPool -= claimAmount;
+
+        // Mint shares exactly as if they had deposited, but no new raw assets are transferred
+        // because the raw assets were already transferred during depositFor (bridge).
+        // Since the raw assets are ALREADY IN totalAssets, we must temporarily exclude them
+        // to find the correct share ratio, OR since totalAssets includes unassigned funds,
+        // we can simply mint proportional shares. Let's mint proportional shares based on current value.
+
+        uint256 totalAssets = getTotalAssets();
+        // The totalAssets INCLUDES the totalCrossChainPool.
+        uint256 activeAssets = totalAssets - totalCrossChainPool - claimAmount; // The assets belonging to existing shares
+
+        uint256 shares;
+        if (totalShares == 0 || activeAssets == 0) {
+            shares = claimAmount;
+        } else {
+            // share ratio = claimAmount / activeAssets
+            shares = (claimAmount * totalShares) / activeAssets;
+        }
+
+        require(shares > 0, "ShieldVault: zero shares");
+
+        // Update user position
+        UserPosition storage position = _positions[msg.sender];
+        position.totalDeposited += claimAmount;
+        position.totalShares += shares;
+        position.lastDepositTime = block.timestamp;
+
+        totalShares += shares;
+
+        emit CrossChainFundsClaimed(msg.sender, claimAmount);
+        emit Deposited(msg.sender, claimAmount, shares);
     }
 
     /// @notice Withdraw assets from the vault
@@ -320,6 +398,32 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
     }
 
     // ============ CRE Functions ============
+
+    /// @notice Oracle sets the user claimable amounts for funds bridged cross-chain
+    /// @dev Uploaded by CRE after reading the source chain state snapshot
+    /// @param users Array of user addresses
+    /// @param amounts Array of claim amounts matching the users
+    function setCrossChainClaims(
+        address[] calldata users,
+        uint256[] calldata amounts
+    ) external onlyCRE {
+        require(users.length == amounts.length, "ShieldVault: length mismatch");
+
+        uint256 totalAssigned = 0;
+        for (uint256 i = 0; i < users.length; i++) {
+            require(users[i] != address(0), "ShieldVault: zero address");
+            crossChainClaims[users[i]] += amounts[i];
+            totalAssigned += amounts[i];
+        }
+
+        // Ensure we aren't assigning more claims than we have funds pooled from the bridge
+        require(
+            totalAssigned <= totalCrossChainPool,
+            "ShieldVault: overallocated claims"
+        );
+
+        emit CrossChainClaimsSet(totalAssigned, users.length);
+    }
 
     /// @notice Rebalance pools based on current target weights (CRE only)
     function rebalance() external onlyCRE nonReentrant {
@@ -502,7 +606,11 @@ contract ShieldVault is IShieldVault, ReentrancyGuard, Ownable {
         );
         require(success, "ShieldVault: bridge call failed");
 
-        emit BridgeInitiated(address(asset), withdrawn, destinationChainSelector);
+        emit BridgeInitiated(
+            address(asset),
+            withdrawn,
+            destinationChainSelector
+        );
     }
 
     // ============ View Functions ============
